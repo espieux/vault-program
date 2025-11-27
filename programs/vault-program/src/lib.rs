@@ -223,6 +223,14 @@ pub mod vault_program {
 
         require!(deposit_amount > 0, VaultError::InvalidAmount);
 
+        // Ensure vault has sufficient tokens to fulfill the withdrawal
+        // This prevents undercollateralization issues when exchange rate increases
+        // without corresponding token deposits
+        require!(
+            ctx.accounts.vault_deposit_token_account.amount >= deposit_amount,
+            VaultError::InsufficientVaultBalance
+        );
+
         // Transfer deposit tokens from vault to user
         // The vault_state PDA is the authority for the vault's deposit token account
         let deposit_mint_decimals = ctx.accounts.deposit_mint.decimals;
@@ -292,6 +300,51 @@ pub mod vault_program {
             old_exchange_rate,
             new_exchange_rate,
             vault_state.current_epoch
+        );
+
+        Ok(())
+    }
+
+    /// Deposit yield tokens into the vault (admin-only).
+    /// This represents staking rewards, yield, or other income that benefits existing holders.
+    /// No IOU tokens are minted - the yield increases the value of existing IOUs.
+    ///
+    /// Parameters:
+    /// - yield_amount: Amount of deposit tokens to transfer to the vault
+    ///
+    /// Security assumptions:
+    /// - Only the admin can call this instruction
+    /// - Admin must have sufficient deposit tokens
+    /// - VaultState must be initialized
+    pub fn deposit_yield(ctx: Context<DepositYield>, yield_amount: u64) -> Result<()> {
+        let vault_state = &ctx.accounts.vault_state;
+
+        // Validate admin authority
+        require!(
+            ctx.accounts.admin.key() == vault_state.admin,
+            VaultError::UnauthorizedAdmin
+        );
+
+        // Validate amount
+        require!(yield_amount > 0, VaultError::InvalidAmount);
+
+        // Transfer deposit tokens from admin to vault
+        // This represents yield/staking rewards that benefit existing IOU holders
+        let deposit_mint_decimals = ctx.accounts.deposit_mint.decimals;
+        let transfer_ctx = CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            TransferChecked {
+                mint: ctx.accounts.deposit_mint.to_account_info(),
+                from: ctx.accounts.admin_deposit_token_account.to_account_info(),
+                to: ctx.accounts.vault_deposit_token_account.to_account_info(),
+                authority: ctx.accounts.admin.to_account_info(),
+            },
+        );
+        token_interface::transfer_checked(transfer_ctx, yield_amount, deposit_mint_decimals)?;
+
+        msg!(
+            "Deposited {} yield tokens into vault (no IOU tokens minted - yield benefits existing holders)",
+            yield_amount
         );
 
         Ok(())
@@ -524,6 +577,45 @@ pub struct IncreaseRate<'info> {
     pub vault_state: Account<'info, VaultState>,
 }
 
+/// Context for the deposit_yield instruction.
+/// Transfers deposit tokens from admin to vault without minting IOU tokens (admin-only).
+#[derive(Accounts)]
+pub struct DepositYield<'info> {
+    /// The admin authority (must sign and match vault_state.admin)
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    /// The vault state PDA
+    #[account(
+        seeds = [b"vault_state", vault_state.deposit_mint.as_ref()],
+        bump,
+        has_one = admin @ VaultError::UnauthorizedAdmin
+    )]
+    pub vault_state: Account<'info, VaultState>,
+
+    /// The deposit token mint
+    pub deposit_mint: InterfaceAccount<'info, Mint>,
+
+    /// Admin's deposit token account (source of transfer)
+    #[account(
+        mut,
+        constraint = admin_deposit_token_account.mint == deposit_mint.key() @ VaultError::InvalidAmount,
+        constraint = admin_deposit_token_account.owner == admin.key() @ VaultError::InvalidTicketOwner
+    )]
+    pub admin_deposit_token_account: InterfaceAccount<'info, TokenAccount>,
+
+    /// Vault's deposit token account (destination of transfer, owned by vault_state PDA)
+    #[account(
+        mut,
+        constraint = vault_deposit_token_account.mint == deposit_mint.key() @ VaultError::InvalidAmount,
+        constraint = vault_deposit_token_account.owner == vault_state.key() @ VaultError::InvalidTicketOwner
+    )]
+    pub vault_deposit_token_account: InterfaceAccount<'info, TokenAccount>,
+
+    /// Token program for transfers
+    pub token_program: Interface<'info, TokenInterface>,
+}
+
 #[error_code]
 pub enum VaultError {
     #[msg("Invalid exchange rate")]
@@ -540,4 +632,6 @@ pub enum VaultError {
     WithdrawalNotReady,
     #[msg("Unauthorized - only admin can perform this action")]
     UnauthorizedAdmin,
+    #[msg("Insufficient vault balance - vault does not have enough tokens to fulfill withdrawal")]
+    InsufficientVaultBalance,
 }
