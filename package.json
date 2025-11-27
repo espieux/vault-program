@@ -2,7 +2,13 @@
   "license": "ISC",
   "scripts": {
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
-    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
+    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
+    "initialize-vault": "ts-mocha -p ./tsconfig.json -t 1000000 scripts/initialize-vault.ts",
+    "mint-tokens": "npx ts-node scripts/mint-tokens.ts",
+    "mint-to-vault": "npx ts-node scripts/mint-to-vault.ts",
+    "increase-rate": "npx ts-node scripts/increase-rate.ts",
+    "increase-epoch": "npx ts-node scripts/increase-epoch.ts",
+    "deposit-yield": "npx ts-node scripts/deposit-yield.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.31.1",
